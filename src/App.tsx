@@ -170,7 +170,6 @@ function App() {
         },
         audio: false
       });
-
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
@@ -190,6 +189,7 @@ function App() {
     } else {
       stopCamera();
     }
+
     return () => stopCamera();
   }, [viewMode, startCamera, stopCamera]);
 
@@ -308,9 +308,7 @@ function App() {
 
   const captureFrame = () => {
     const video = videoRef.current;
-    if (!video || video.videoWidth === 0 || video.videoHeight === 0) {
-      return;
-    }
+    if (!video || video.videoWidth === 0 || video.videoHeight === 0) return;
 
     const canvas = document.createElement('canvas');
     canvas.width = video.videoWidth;
@@ -339,8 +337,8 @@ function App() {
     const image = new Image();
 
     image.onload = () => {
-      setPreviewSrc((old) => {
-        if (old?.startsWith('blob:')) URL.revokeObjectURL(old);
+      setPreviewSrc((prev) => {
+        if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev);
         return objectUrl;
       });
       setViewMode('preview');
@@ -366,8 +364,8 @@ function App() {
     setOcrStatus('idle');
     setOcrResult(null);
     setManualErrors({});
-    setPreviewSrc((old) => {
-      if (old?.startsWith('blob:')) URL.revokeObjectURL(old);
+    setPreviewSrc((prev) => {
+      if (prev?.startsWith('blob:')) URL.revokeObjectURL(prev);
       return null;
     });
   };
@@ -393,7 +391,6 @@ function App() {
         nextErrors[key] = `${FIELD_LABELS[key]}は必須です`;
       }
     });
-
     setManualErrors(nextErrors);
     return Object.keys(nextErrors).length === 0;
   };
@@ -448,17 +445,28 @@ function App() {
     });
   };
 
+  const sourceLinks = useMemo(() => {
+    if (!report) return [];
+    const unique = new Set<string>();
+    report.dimensions.forEach((dimension) => {
+      dimension.facts.forEach((fact) => {
+        if (fact.sourceUrl) unique.add(fact.sourceUrl);
+      });
+    });
+    return [...unique];
+  }, [report]);
+
   return (
     <main className="shell">
       <header className="topbar">
         <div className="title">名刺スキャン</div>
-        <div className="status" id="status">{statusText}</div>
+        <div className="status">{statusText}</div>
       </header>
 
       <PipelineProgress steps={pipelineSteps} visible={isAnalyzing} />
 
       {viewMode === 'capture' ? (
-        <section className={`live ${cameraStatus === 'failed' ? 'no-camera' : ''}`} id="liveView">
+        <section className={`live ${cameraStatus === 'failed' ? 'no-camera' : ''}`}>
           <video ref={videoRef} id="camera" autoPlay playsInline muted />
           <div className="frame" aria-hidden="true" />
           <div className="hint">名刺を枠内に合わせてください</div>
@@ -480,7 +488,6 @@ function App() {
             <input
               ref={fileInputRef}
               type="file"
-              id="fileInput"
               accept="image/*"
               className="visually-hidden"
               onChange={onSelectImage}
@@ -490,8 +497,8 @@ function App() {
       ) : null}
 
       {viewMode === 'preview' ? (
-        <section className="preview" id="previewView">
-          <img id="previewImage" src={previewSrc ?? ''} alt="撮影した画像のプレビュー" />
+        <section className="preview">
+          <img src={previewSrc ?? ''} alt="撮影した画像のプレビュー" />
           <div className="actions">
             <button className="ghost-btn" id="retakeBtn" type="button" onClick={onRetake} disabled={isAnalyzing || isOcrRunning}>
               再撮影
@@ -504,7 +511,7 @@ function App() {
       ) : null}
 
       {viewMode === 'manual' ? (
-        <section className="manual" id="manualView">
+        <section className="manual">
           <form className="manual-form" onSubmit={(event) => event.preventDefault()}>
             {(Object.keys(FIELD_LABELS) as ManualRequiredField[]).map((key) => (
               <label className="field" key={key} htmlFor={`manual-${key}`}>
