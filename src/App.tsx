@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEventHandler } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 
 type CameraStatus = 'idle' | 'loading' | 'ready' | 'failed';
 type ViewMode = 'capture' | 'preview' | 'manual';
+type PipelineStepStatus = 'waiting' | 'running' | 'completed';
 
 type ManualInput = {
   name: string;
@@ -11,11 +13,33 @@ type ManualInput = {
 
 type ManualField = keyof ManualInput;
 
+type PipelineStepId = 'ocr' | 'person' | 'company' | 'merge' | 'score';
+
+type PipelineStep = {
+  id: PipelineStepId;
+  label: string;
+  status: PipelineStepStatus;
+};
+
 type PipelinePayload = {
   source: 'camera' | 'manual';
   imageDataUrl?: string;
   namecardData: ManualInput;
 };
+
+type PipelineEvent = {
+  type?: 'step_completed' | 'pipeline_done';
+  step?: PipelineStepId;
+  status?: 'completed';
+};
+
+const PIPELINE_STEP_META: Array<{ id: PipelineStepId; label: string }> = [
+  { id: 'ocr', label: 'OCR' },
+  { id: 'person', label: 'Person' },
+  { id: 'company', label: 'Company' },
+  { id: 'merge', label: 'Merge' },
+  { id: 'score', label: 'Score' }
+];
 
 const INITIAL_MANUAL_INPUT: ManualInput = {
   name: '',
@@ -29,10 +53,58 @@ const FIELD_LABELS: Record<ManualField, string> = {
   title: '役職'
 };
 
+function buildInitialPipelineSteps(): PipelineStep[] {
+  return PIPELINE_STEP_META.map((step, index) => ({
+    ...step,
+    status: index === 0 ? 'running' : 'waiting'
+  }));
+}
+
+function PipelineProgress({ steps, visible }: { steps: PipelineStep[]; visible: boolean }) {
+  return (
+    <AnimatePresence>
+      {visible ? (
+        <motion.aside
+          className="pipeline-panel"
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: 10 }}
+          transition={{ duration: 0.22 }}
+        >
+          <div className="pipeline-title">Pipeline Progress</div>
+          <ul className="pipeline-list">
+            {steps.map((step, index) => (
+              <motion.li
+                key={step.id}
+                className={`pipeline-item is-${step.status}`}
+                initial={{ opacity: 0, x: -8 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ duration: 0.22, delay: index * 0.06 }}
+              >
+                <motion.span
+                  className="pipeline-dot"
+                  animate={step.status === 'running' ? { scale: [1, 1.25, 1], opacity: [1, 0.65, 1] } : { scale: 1, opacity: 1 }}
+                  transition={step.status === 'running' ? { duration: 1.1, repeat: Number.POSITIVE_INFINITY } : { duration: 0.15 }}
+                />
+                <span className="pipeline-label">{step.label}</span>
+                <span className="pipeline-state">
+                  {step.status === 'waiting' ? '待機' : step.status === 'running' ? '実行中...' : '完了'}
+                </span>
+              </motion.li>
+            ))}
+          </ul>
+        </motion.aside>
+      ) : null}
+    </AnimatePresence>
+  );
+}
+
 function App() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
+  const mockTimerRef = useRef<number[]>([]);
 
   const [statusText, setStatusText] = useState('カメラを起動します…');
   const [cameraStatus, setCameraStatus] = useState<CameraStatus>('idle');
@@ -42,11 +114,24 @@ function App() {
   const [manualInput, setManualInput] = useState<ManualInput>(INITIAL_MANUAL_INPUT);
   const [manualErrors, setManualErrors] = useState<Partial<Record<ManualField, string>>>({});
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [pipelineSteps, setPipelineSteps] = useState<PipelineStep[]>(PIPELINE_STEP_META.map((step) => ({ ...step, status: 'waiting' as const })));
 
   const stopCamera = useCallback(() => {
     if (!streamRef.current) return;
     streamRef.current.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
+  }, []);
+
+  const closeEventSource = useCallback(() => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+  }, []);
+
+  const clearMockTimers = useCallback(() => {
+    mockTimerRef.current.forEach((timerId) => window.clearTimeout(timerId));
+    mockTimerRef.current = [];
   }, []);
 
   const startCamera = useCallback(async () => {
@@ -92,30 +177,120 @@ function App() {
   }, [viewMode, startCamera, stopCamera]);
 
   useEffect(() => {
-    const handlePageHide = () => stopCamera();
+    const handlePageHide = () => {
+      stopCamera();
+      closeEventSource();
+    };
     window.addEventListener('pagehide', handlePageHide);
     return () => window.removeEventListener('pagehide', handlePageHide);
-  }, [stopCamera]);
+  }, [closeEventSource, stopCamera]);
 
   useEffect(() => {
     return () => {
       if (previewSrc?.startsWith('blob:')) {
         URL.revokeObjectURL(previewSrc);
       }
+      closeEventSource();
+      clearMockTimers();
     };
-  }, [previewSrc]);
+  }, [clearMockTimers, closeEventSource, previewSrc]);
+
+  const completeStep = useCallback((stepId: PipelineStepId) => {
+    setPipelineSteps((prev) => {
+      const currentIndex = prev.findIndex((step) => step.id === stepId);
+      if (currentIndex < 0) return prev;
+
+      const next = prev.map((step, index) => {
+        if (index < currentIndex) return { ...step, status: 'completed' as const };
+        if (index === currentIndex) return { ...step, status: 'completed' as const };
+        if (index === currentIndex + 1) return { ...step, status: 'running' as const };
+        return { ...step, status: 'waiting' as const };
+      });
+
+      if (currentIndex === prev.length - 1) {
+        setStatusText('分析を開始しました');
+        setIsAnalyzing(false);
+        closeEventSource();
+      }
+
+      return next;
+    });
+  }, [closeEventSource]);
+
+  const simulatePipelineProgress = useCallback(() => {
+    clearMockTimers();
+    PIPELINE_STEP_META.forEach((step, index) => {
+      const timerId = window.setTimeout(() => completeStep(step.id), 850 * (index + 1));
+      mockTimerRef.current.push(timerId);
+    });
+  }, [clearMockTimers, completeStep]);
+
+  const startPipelineStream = useCallback((jobId: string) => {
+    closeEventSource();
+
+    const source = new EventSource(`/api/pipeline/events?jobId=${encodeURIComponent(jobId)}`);
+    eventSourceRef.current = source;
+
+    source.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data) as PipelineEvent;
+        if (payload.type === 'pipeline_done') {
+          setPipelineSteps((prev) => prev.map((step) => ({ ...step, status: 'completed' })));
+          setStatusText('分析を開始しました');
+          setIsAnalyzing(false);
+          closeEventSource();
+          return;
+        }
+
+        const targetStep = payload.step;
+        if (payload.type === 'step_completed' && targetStep) {
+          completeStep(targetStep);
+          return;
+        }
+
+        if (payload.status === 'completed' && targetStep) {
+          completeStep(targetStep);
+        }
+      } catch {
+        // noop: ignore malformed events
+      }
+    };
+
+    source.onerror = () => {
+      closeEventSource();
+      setStatusText('SSE接続に失敗したため、ローカル進捗シミュレーションに切替えました');
+      simulatePipelineProgress();
+    };
+  }, [closeEventSource, completeStep, simulatePipelineProgress]);
 
   const startDdPipeline = async (payload: PipelinePayload) => {
+    if (isAnalyzing) return;
+
+    clearMockTimers();
     setIsAnalyzing(true);
+    setPipelineSteps(buildInitialPipelineSteps());
     setStatusText('分析パイプラインを起動中…');
 
     try {
-      // TODO: 実API接続時に置き換える
-      await new Promise((resolve) => setTimeout(resolve, 1200));
-      console.log('DD pipeline payload:', payload);
-      setStatusText('分析を開始しました');
-    } finally {
-      setIsAnalyzing(false);
+      const response = await fetch('/api/pipeline/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        throw new Error('failed to start pipeline');
+      }
+
+      const body = (await response.json()) as { jobId?: string };
+      if (!body.jobId) {
+        throw new Error('missing jobId');
+      }
+
+      startPipelineStream(body.jobId);
+    } catch (error) {
+      console.warn('SSE start failed. falling back to mock progress.', error);
+      simulatePipelineProgress();
     }
   };
 
@@ -171,6 +346,10 @@ function App() {
   };
 
   const onRetake = () => {
+    closeEventSource();
+    clearMockTimers();
+    setIsAnalyzing(false);
+    setPipelineSteps(PIPELINE_STEP_META.map((step) => ({ ...step, status: 'waiting' })));
     setViewMode('capture');
     setStatusText('カメラを起動します…');
     setManualErrors({});
@@ -232,6 +411,8 @@ function App() {
         <div className="title">名刺スキャン</div>
         <div className="status" id="status">{statusText}</div>
       </header>
+
+      <PipelineProgress steps={pipelineSteps} visible={isAnalyzing} />
 
       {viewMode === 'capture' ? (
         <section className={`live ${cameraStatus === 'failed' ? 'no-camera' : ''}`} id="liveView">
