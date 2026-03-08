@@ -1,25 +1,18 @@
 import { randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { promisify } from 'node:util';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 
+const execFileAsync = promisify(execFile);
+
 type OcrRequestBody = {
   imageDataUrl?: string;
 };
-
-type PipelineStartBody = {
-  source?: 'camera' | 'manual';
-  imageDataUrl?: string;
-  namecardData?: {
-    name?: string;
-    company?: string;
-    title?: string;
-    email?: string;
-    phone?: string;
-  };
-};
-
-type PipelineStepId = 'ocr' | 'person' | 'company' | 'merge' | 'score';
 
 function readJsonBody<T>(req: IncomingMessage): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -33,7 +26,7 @@ function readJsonBody<T>(req: IncomingMessage): Promise<T> {
     });
     req.on('end', () => {
       try {
-        resolve((raw ? JSON.parse(raw) : {}) as T);
+        resolve(JSON.parse(raw) as T);
       } catch {
         reject(new Error('Invalid JSON body'));
       }
@@ -42,19 +35,39 @@ function readJsonBody<T>(req: IncomingMessage): Promise<T> {
   });
 }
 
+function parseDataUrl(dataUrl: string): { buffer: Buffer; ext: string } {
+  const match = dataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+  if (!match) {
+    throw new Error('Unsupported image data URL');
+  }
+
+  const mime = match[1];
+  const extMap: Record<string, string> = {
+    'image/jpeg': '.jpg',
+    'image/png': '.png',
+    'image/gif': '.gif',
+    'image/webp': '.webp'
+  };
+  const ext = extMap[mime];
+  if (!ext) {
+    throw new Error(`Unsupported image mime type: ${mime}`);
+  }
+
+  return {
+    buffer: Buffer.from(match[2], 'base64'),
+    ext
+  };
+}
+
 function sendJson(res: ServerResponse, statusCode: number, payload: unknown): void {
   res.statusCode = statusCode;
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   res.end(JSON.stringify(payload));
 }
 
-function writeSse(res: ServerResponse, payload: unknown): void {
-  res.write(`data: ${JSON.stringify(payload)}\n\n`);
-}
-
-function mockApiPlugin(): Plugin {
+function ocrApiPlugin(): Plugin {
   return {
-    name: 'local-mock-api',
+    name: 'local-ocr-api',
     configureServer(server) {
       server.middlewares.use('/api/ocr/extract', async (req, res) => {
         if (req.method !== 'POST') {
@@ -62,6 +75,7 @@ function mockApiPlugin(): Plugin {
           return;
         }
 
+        let tempPath = '';
         try {
           const body = await readJsonBody<OcrRequestBody>(req);
           if (!body.imageDataUrl) {
@@ -69,88 +83,41 @@ function mockApiPlugin(): Plugin {
             return;
           }
 
+          // Temporary mock response for frontend integration testing.
           sendJson(res, 200, {
             name: '岩辺達也',
             company: 'SanSan株式会社',
-            title: 'SanSan事業部 SMB第3営業部',
+            title: 'SanSan事業部 SMB第３営業部',
             email: 'iwanabe@sansan.com',
             phone: '03-6419-3033'
           });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : 'Mock OCR failed';
-          sendJson(res, 500, { error: message });
-        }
-      });
-
-      server.middlewares.use('/api/pipeline/start', async (req, res) => {
-        if (req.method !== 'POST') {
-          sendJson(res, 405, { error: 'Method Not Allowed' });
           return;
-        }
 
-        try {
-          const body = await readJsonBody<PipelineStartBody>(req);
-          if (!body.source) {
-            sendJson(res, 400, { error: 'source is required' });
-            return;
-          }
+          const { buffer, ext } = parseDataUrl(body.imageDataUrl);
+          tempPath = path.join(os.tmpdir(), `ocr-upload-${randomUUID()}${ext}`);
+          await fs.writeFile(tempPath, buffer);
 
-          sendJson(res, 200, {
-            jobId: `mock-job-${randomUUID()}`
+          const { stdout } = await execFileAsync('python3', ['meishi_ocr_kimi.py', tempPath], {
+            cwd: process.cwd(),
+            timeout: 60_000,
+            maxBuffer: 2 * 1024 * 1024
           });
+
+          const parsed = JSON.parse(stdout);
+          sendJson(res, 200, parsed);
         } catch (error) {
-          const message = error instanceof Error ? error.message : 'Mock pipeline start failed';
+          const message = error instanceof Error ? error.message : 'OCR execution failed';
           sendJson(res, 500, { error: message });
+        } finally {
+          if (tempPath) {
+            fs.unlink(tempPath).catch(() => undefined);
+          }
         }
-      });
-
-      server.middlewares.use('/api/pipeline/events', (req, res) => {
-        if (req.method !== 'GET') {
-          sendJson(res, 405, { error: 'Method Not Allowed' });
-          return;
-        }
-
-        const url = new URL(req.url ?? '', 'http://localhost');
-        const jobId = url.searchParams.get('jobId');
-        if (!jobId) {
-          sendJson(res, 400, { error: 'jobId is required' });
-          return;
-        }
-
-        res.statusCode = 200;
-        res.setHeader('Content-Type', 'text/event-stream');
-        res.setHeader('Cache-Control', 'no-cache');
-        res.setHeader('Connection', 'keep-alive');
-        res.flushHeaders?.();
-
-        const stepIds: PipelineStepId[] = ['ocr', 'person', 'company', 'merge', 'score'];
-        const timers: ReturnType<typeof setTimeout>[] = [];
-
-        writeSse(res, { type: 'connected', jobId });
-
-        stepIds.forEach((stepId, index) => {
-          timers.push(setTimeout(() => {
-            writeSse(res, {
-              type: 'step_completed',
-              step: stepId,
-              status: 'completed'
-            });
-
-            if (index === stepIds.length - 1) {
-              writeSse(res, { type: 'pipeline_done', status: 'completed' });
-              res.end();
-            }
-          }, 1000 * (index + 1)));
-        });
-
-        req.on('close', () => {
-          timers.forEach((timer) => clearTimeout(timer));
-        });
       });
     }
   };
 }
 
 export default defineConfig({
-  plugins: [react(), mockApiPlugin()]
+  plugins: [react(), ocrApiPlugin()]
 });
