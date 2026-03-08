@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 
 .venv/
 node_modules/
@@ -5,3 +6,22 @@ dist/
 *.tsbuildinfo
 vite.config.js
 vite.config.d.ts
+=======
+# secrets
+.env
+
+# python
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+
+# model cache
+.cache/
+
+# outputs
+match_results.json
+scan_result.json
+batch_results.json
+>>>>>>> origin/feature/ocr-pipeline
