@@ -1,0 +1,17 @@
+# secrets
+.env
+
+# python
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+
+# model cache
+.cache/
+
+# outputs
+match_results.json
+scan_result.json
+batch_results.json
