@@ -22,7 +22,7 @@ if not UNBOUND_API_KEY:
 BASE_URL = os.getenv("UNBOUND_BASE_URL", "https://api.getunbound.ai/v1")
 MODEL = os.getenv("KIMI_MODEL", "fireworks-ai/kimi-k2p5")
 MAX_TOKENS = 4096
-TIMEOUT_SEC = 30.0
+TIMEOUT_SEC = 60.0
 
 SUPPORTED_FORMATS = {
     ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
