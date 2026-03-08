@@ -52,6 +52,51 @@ button { font: inherit; cursor: pointer; border: none; background: none; }
 .primary-btn { background: linear-gradient(120deg, var(--accent), #00b17f); color: #06121d; box-shadow: 0 10px 24px rgba(0,209,160,0.35); }
 .ghost-btn { background: var(--surface); color: var(--text); border: 1px solid rgba(255,255,255,0.08); backdrop-filter: blur(6px); }
 
+.manual {
+  width: 100%;
+  min-height: 100vh;
+  display: grid;
+  align-content: center;
+  padding: 80px 16px 24px;
+}
+
+.manual-form {
+  width: min(640px, 100%);
+  margin: 0 auto;
+  display: grid;
+  gap: 10px;
+  background: rgba(12, 20, 30, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 16px;
+  padding: 14px;
+  backdrop-filter: blur(8px);
+}
+
+.field { display: grid; gap: 6px; }
+.field-label { font-size: 0.88rem; }
+
+.field input {
+  width: 100%;
+  height: 42px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  padding: 0 12px;
+}
+
+.field input[aria-invalid='true'] { border-color: #ff9a9a; }
+.field-error { color: #ffb3b3; font-size: 0.8rem; }
+
+.manual-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+button:disabled { opacity: 0.6; cursor: not-allowed; }
+
 .live.no-camera #camera,
 .live.no-camera .frame,
 .live.no-camera .hint,
