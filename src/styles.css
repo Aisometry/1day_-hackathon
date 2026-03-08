@@ -119,3 +119,98 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   .frame { inset: 10% 24%; }
   .hint { bottom: 16%; }
 }
+
+.editor {
+  min-height: 100vh;
+  padding: 72px 16px 20px;
+  display: grid;
+  gap: 14px;
+  align-content: start;
+}
+
+.editor-preview-wrap {
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  padding: 8px;
+}
+
+.editor-preview {
+  width: 100%;
+  max-height: 220px;
+  object-fit: contain;
+  border-radius: 10px;
+  background: #111;
+}
+
+.editor-form {
+  display: grid;
+  gap: 10px;
+  background: rgba(12, 20, 30, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 16px;
+  padding: 14px;
+  backdrop-filter: blur(8px);
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+}
+
+.field-label {
+  font-size: 0.88rem;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.field-label em {
+  font-style: normal;
+  font-size: 0.75rem;
+  color: #ffd479;
+}
+
+.field input {
+  width: 100%;
+  height: 42px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  padding: 0 12px;
+}
+
+.field input[aria-invalid='true'] {
+  border-color: #ff9a9a;
+}
+
+.field-error {
+  color: #ffb3b3;
+  font-size: 0.8rem;
+}
+
+.editor-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.editor-actions button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+@media (min-width: 760px) {
+  .editor {
+    grid-template-columns: minmax(280px, 420px) minmax(320px, 1fr);
+    gap: 18px;
+    align-items: start;
+  }
+
+  .editor-preview-wrap {
+    position: sticky;
+    top: 80px;
+  }
+}
