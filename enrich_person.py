@@ -14,6 +14,7 @@ Usage:
 
 import json
 import os
+import re
 import sys
 import httpx
 from dataclasses import dataclass, field, asdict
@@ -80,6 +81,38 @@ class PersonProfile:
     education: list[dict] = field(default_factory=list)
 
 
+# ======================= NAME UTILS =======================
+def extract_romaji(name: str) -> Optional[str]:
+    """'湯川昇平 (Shohei Yukawa)' → 'Shohei Yukawa'"""
+    m = re.search(r"\(([A-Za-z\s\-\.]+)\)", name)
+    if m:
+        return m.group(1).strip()
+    return None
+
+
+def extract_ascii_name(name: str) -> Optional[str]:
+    """If the name is already all-ASCII, return as-is."""
+    ascii_only = re.sub(r"[^\x20-\x7E]", "", name).strip()
+    if len(ascii_only) >= 3 and " " in ascii_only:
+        return ascii_only
+    return None
+
+
+def get_search_names(name: str) -> list[str]:
+    """Return a list of name variants to try, romaji first."""
+    candidates = []
+    romaji = extract_romaji(name)
+    if romaji:
+        candidates.append(romaji)
+    ascii_name = extract_ascii_name(name)
+    if ascii_name and ascii_name not in candidates:
+        candidates.append(ascii_name)
+    # Also try the raw name (might work for English-only cards)
+    if name not in candidates:
+        candidates.append(name)
+    return candidates
+
+
 # ======================= API CALLS =======================
 def search_person(name: str, company: Optional[str]) -> Optional[dict]:
     """
@@ -115,6 +148,32 @@ def search_person(name: str, company: Optional[str]) -> Optional[dict]:
     data = resp.json()
     profiles = data.get("profiles", [])
     return profiles[0] if profiles else None
+
+
+def enrich_by_email(email: str) -> Optional[dict]:
+    """
+    CrustData People Enrichment: メールアドレスから詳細プロフィール取得
+    """
+    with httpx.Client(timeout=TIMEOUT) as client:
+        resp = client.get(
+            f"{BASE}/screener/person/enrich",
+            params={"email": email},
+            headers=HEADERS,
+        )
+
+    if resp.status_code in (404, 400):
+        return None
+    if resp.status_code != 200:
+        print(
+            f"Enrich(email) API error {resp.status_code}: {resp.text[:300]}",
+            file=sys.stderr,
+        )
+        return None
+
+    data = resp.json()
+    if isinstance(data, list):
+        return data[0] if data else None
+    return data
 
 
 def enrich_person(linkedin_url: str) -> Optional[dict]:
@@ -213,17 +272,32 @@ def main():
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
         return
 
-    print(f"Searching CrustData: name={name}, company={company}", file=sys.stderr)
+    email = card.get("email")
+    search_names = get_search_names(name)
 
-    # Step 1: Search
-    profile_raw = search_person(name, company)
+    print(f"Search candidates: {search_names}, company={company}, email={email}", file=sys.stderr)
 
-    # company 付きで見つからなければ name のみでリトライ
-    if profile_raw is None and company:
-        print("Retrying search without company filter...", file=sys.stderr)
-        profile_raw = search_person(name, None)
+    # Step 1: Try search with each name variant
+    profile_raw = None
+    for candidate_name in search_names:
+        print(f"  Trying: name='{candidate_name}' + company='{company}'", file=sys.stderr)
+        profile_raw = search_person(candidate_name, company)
+        if profile_raw:
+            break
+        # Retry without company
+        if company:
+            print(f"  Trying: name='{candidate_name}' (no company)", file=sys.stderr)
+            profile_raw = search_person(candidate_name, None)
+            if profile_raw:
+                break
 
-    if profile_raw is None:
+    # Step 2: Fallback — enrich by email
+    enriched_raw = None
+    if profile_raw is None and email:
+        print(f"  Fallback: enriching by email={email}", file=sys.stderr)
+        enriched_raw = enrich_by_email(email)
+
+    if profile_raw is None and enriched_raw is None:
         # 未取得
         result = PersonProfile(
             enriched=False,
@@ -236,12 +310,12 @@ def main():
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
         return
 
-    # Step 2: Enrich (if we got a LinkedIn URL, try enrichment for deeper data)
-    linkedin_url = profile_raw.get("linkedin_profile_url") or profile_raw.get("flagship_profile_url")
-    enriched_raw = None
-    if linkedin_url:
-        print(f"Enriching: {linkedin_url}", file=sys.stderr)
-        enriched_raw = enrich_person(linkedin_url)
+    # Step 3: If we found via search, try deeper enrichment via LinkedIn URL
+    if profile_raw and not enriched_raw:
+        linkedin_url = profile_raw.get("linkedin_profile_url") or profile_raw.get("flagship_profile_url")
+        if linkedin_url:
+            print(f"Enriching: {linkedin_url}", file=sys.stderr)
+            enriched_raw = enrich_person(linkedin_url)
 
     # Use enriched data if available, otherwise fall back to search data
     source = enriched_raw if enriched_raw else profile_raw
