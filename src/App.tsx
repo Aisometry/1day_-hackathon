@@ -1,17 +1,21 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEventHandler } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
+import { extractNamecardData, type OcrNamecardData } from './services/ocr';
 
 type CameraStatus = 'idle' | 'loading' | 'ready' | 'failed';
-type ViewMode = 'capture' | 'preview' | 'manual';
+type ViewMode = 'capture' | 'preview' | 'manual' | 'report';
 type PipelineStepStatus = 'waiting' | 'running' | 'completed';
+type OcrStatus = 'idle' | 'running' | 'success' | 'failed';
 
 type ManualInput = {
   name: string;
   company: string;
   title: string;
+  email: string;
+  phone: string;
 };
 
-type ManualField = keyof ManualInput;
+type ManualRequiredField = 'name' | 'company' | 'title';
 
 type PipelineStepId = 'ocr' | 'person' | 'company' | 'merge' | 'score';
 
@@ -44,10 +48,12 @@ const PIPELINE_STEP_META: Array<{ id: PipelineStepId; label: string }> = [
 const INITIAL_MANUAL_INPUT: ManualInput = {
   name: '',
   company: '',
-  title: ''
+  title: '',
+  email: '',
+  phone: ''
 };
 
-const FIELD_LABELS: Record<ManualField, string> = {
+const FIELD_LABELS: Record<ManualRequiredField, string> = {
   name: '名前',
   company: '会社',
   title: '役職'
@@ -112,8 +118,11 @@ function App() {
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
 
   const [manualInput, setManualInput] = useState<ManualInput>(INITIAL_MANUAL_INPUT);
-  const [manualErrors, setManualErrors] = useState<Partial<Record<ManualField, string>>>({});
+  const [manualErrors, setManualErrors] = useState<Partial<Record<ManualRequiredField, string>>>({});
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isOcrRunning, setIsOcrRunning] = useState(false);
+  const [ocrStatus, setOcrStatus] = useState<OcrStatus>('idle');
+  const [ocrResult, setOcrResult] = useState<OcrNamecardData | null>(null);
   const [pipelineSteps, setPipelineSteps] = useState<PipelineStep[]>(PIPELINE_STEP_META.map((step) => ({ ...step, status: 'waiting' as const })));
 
   const stopCamera = useCallback(() => {
@@ -133,6 +142,14 @@ function App() {
     mockTimerRef.current.forEach((timerId) => window.clearTimeout(timerId));
     mockTimerRef.current = [];
   }, []);
+
+  const finishPipeline = useCallback(() => {
+    setStatusText('分析を開始しました');
+    setIsAnalyzing(false);
+    setViewMode('report');
+    closeEventSource();
+    clearMockTimers();
+  }, [clearMockTimers, closeEventSource]);
 
   const startCamera = useCallback(async () => {
     if (!navigator.mediaDevices?.getUserMedia) {
@@ -207,15 +224,12 @@ function App() {
         return { ...step, status: 'waiting' as const };
       });
 
-      if (currentIndex === prev.length - 1) {
-        setStatusText('分析を開始しました');
-        setIsAnalyzing(false);
-        closeEventSource();
-      }
-
       return next;
     });
-  }, [closeEventSource]);
+    if (stepId === 'score') {
+      finishPipeline();
+    }
+  }, [finishPipeline]);
 
   const simulatePipelineProgress = useCallback(() => {
     clearMockTimers();
@@ -236,9 +250,7 @@ function App() {
         const payload = JSON.parse(event.data) as PipelineEvent;
         if (payload.type === 'pipeline_done') {
           setPipelineSteps((prev) => prev.map((step) => ({ ...step, status: 'completed' })));
-          setStatusText('分析を開始しました');
-          setIsAnalyzing(false);
-          closeEventSource();
+          finishPipeline();
           return;
         }
 
@@ -261,7 +273,7 @@ function App() {
       setStatusText('SSE接続に失敗したため、ローカル進捗シミュレーションに切替えました');
       simulatePipelineProgress();
     };
-  }, [closeEventSource, completeStep, simulatePipelineProgress]);
+  }, [closeEventSource, completeStep, finishPipeline, simulatePipelineProgress]);
 
   const startDdPipeline = async (payload: PipelinePayload) => {
     if (isAnalyzing) return;
@@ -351,6 +363,8 @@ function App() {
     setPipelineSteps(PIPELINE_STEP_META.map((step) => ({ ...step, status: 'waiting' })));
     setViewMode('capture');
     setStatusText('カメラを起動します…');
+    setOcrStatus('idle');
+    setOcrResult(null);
     setManualErrors({});
     setPreviewSrc((old) => {
       if (old?.startsWith('blob:')) URL.revokeObjectURL(old);
@@ -360,19 +374,21 @@ function App() {
 
   const onStartManual = () => {
     setManualErrors({});
+    setOcrStatus('idle');
+    setOcrResult(null);
     setViewMode('manual');
     setStatusText('名前・会社・役職を入力して分析開始してください');
   };
 
-  const onManualChange = (key: ManualField, value: string) => {
+  const onManualChange = (key: ManualRequiredField, value: string) => {
     setManualInput((prev) => ({ ...prev, [key]: value }));
     setManualErrors((prev) => ({ ...prev, [key]: undefined }));
   };
 
   const validateManualInput = () => {
-    const nextErrors: Partial<Record<ManualField, string>> = {};
+    const nextErrors: Partial<Record<ManualRequiredField, string>> = {};
 
-    (Object.keys(FIELD_LABELS) as ManualField[]).forEach((key) => {
+    (Object.keys(FIELD_LABELS) as ManualRequiredField[]).forEach((key) => {
       if (!manualInput[key].trim()) {
         nextErrors[key] = `${FIELD_LABELS[key]}は必須です`;
       }
@@ -383,16 +399,44 @@ function App() {
   };
 
   const onConfirmPreview = async () => {
-    if (!previewSrc || isAnalyzing) return;
+    if (!previewSrc || isAnalyzing || isOcrRunning) return;
+
+    setIsOcrRunning(true);
+    setOcrStatus('running');
+    setStatusText('OCR抽出中…');
+
+    let mergedInput = manualInput;
+    try {
+      const ocrResult = await extractNamecardData(previewSrc);
+      setOcrResult(ocrResult);
+      setOcrStatus('success');
+      mergedInput = {
+        name: ocrResult.name ?? manualInput.name,
+        company: ocrResult.company ?? manualInput.company,
+        title: ocrResult.title ?? manualInput.title,
+        email: ocrResult.email ?? manualInput.email,
+        phone: ocrResult.phone ?? manualInput.phone
+      };
+      setManualInput(mergedInput);
+      setStatusText('OCR抽出が完了しました。分析を開始します…');
+    } catch (error) {
+      console.warn('OCR extraction failed. continue with current input.', error);
+      setOcrStatus('failed');
+      setOcrResult(null);
+      setStatusText('OCR抽出に失敗したため既存入力で分析を開始します');
+    } finally {
+      setIsOcrRunning(false);
+    }
+
     await startDdPipeline({
       source: 'camera',
       imageDataUrl: previewSrc,
-      namecardData: manualInput
+      namecardData: mergedInput
     });
   };
 
   const onStartFromManual = async () => {
-    if (isAnalyzing) return;
+    if (isAnalyzing || isOcrRunning) return;
     if (!validateManualInput()) {
       setStatusText('必須項目を入力してください');
       return;
@@ -424,13 +468,13 @@ function App() {
             type="button"
             onClick={captureFrame}
             aria-label="撮影"
-            disabled={isAnalyzing}
+            disabled={isAnalyzing || isOcrRunning}
           />
           <div className="fallback">
-            <button className="ghost-btn" id="pickImageBtn" type="button" onClick={onPickImage} disabled={isAnalyzing}>
+            <button className="ghost-btn" id="pickImageBtn" type="button" onClick={onPickImage} disabled={isAnalyzing || isOcrRunning}>
               カメラが使えない? 画像を選択
             </button>
-            <button className="ghost-btn" type="button" onClick={onStartManual} disabled={isAnalyzing}>
+            <button className="ghost-btn" type="button" onClick={onStartManual} disabled={isAnalyzing || isOcrRunning}>
               手入力で開始
             </button>
             <input
@@ -449,11 +493,11 @@ function App() {
         <section className="preview" id="previewView">
           <img id="previewImage" src={previewSrc ?? ''} alt="撮影した画像のプレビュー" />
           <div className="actions">
-            <button className="ghost-btn" id="retakeBtn" type="button" onClick={onRetake} disabled={isAnalyzing}>
+            <button className="ghost-btn" id="retakeBtn" type="button" onClick={onRetake} disabled={isAnalyzing || isOcrRunning}>
               再撮影
             </button>
-            <button className="primary-btn" id="confirmBtn" type="button" onClick={onConfirmPreview} disabled={isAnalyzing}>
-              {isAnalyzing ? '分析中…' : '分析開始'}
+            <button className="primary-btn" id="confirmBtn" type="button" onClick={onConfirmPreview} disabled={isAnalyzing || isOcrRunning}>
+              {isOcrRunning ? 'OCR中…' : isAnalyzing ? '分析中…' : '分析開始'}
             </button>
           </div>
         </section>
@@ -462,7 +506,7 @@ function App() {
       {viewMode === 'manual' ? (
         <section className="manual" id="manualView">
           <form className="manual-form" onSubmit={(event) => event.preventDefault()}>
-            {(Object.keys(FIELD_LABELS) as ManualField[]).map((key) => (
+            {(Object.keys(FIELD_LABELS) as ManualRequiredField[]).map((key) => (
               <label className="field" key={key} htmlFor={`manual-${key}`}>
                 <span className="field-label">{FIELD_LABELS[key]}</span>
                 <input
@@ -476,14 +520,61 @@ function App() {
             ))}
 
             <div className="manual-actions">
-              <button className="ghost-btn" type="button" onClick={onRetake} disabled={isAnalyzing}>
+              <button className="ghost-btn" type="button" onClick={onRetake} disabled={isAnalyzing || isOcrRunning}>
                 撮影に戻る
               </button>
-              <button className="primary-btn" type="button" onClick={onStartFromManual} disabled={isAnalyzing}>
+              <button className="primary-btn" type="button" onClick={onStartFromManual} disabled={isAnalyzing || isOcrRunning}>
                 {isAnalyzing ? '分析中…' : '分析開始'}
               </button>
             </div>
           </form>
+        </section>
+      ) : null}
+
+      {viewMode === 'report' ? (
+        <section className="report" id="reportView">
+          <div className="report-card">
+            <h2>分析レポート</h2>
+            <p className="report-note">パイプライン完了。入力データとOCR結果を確認できます。</p>
+            <div className="report-grid">
+              <div>
+                <h3>入力データ</h3>
+                <ul>
+                  <li>名前: {manualInput.name || '-'}</li>
+                  <li>会社: {manualInput.company || '-'}</li>
+                  <li>役職: {manualInput.title || '-'}</li>
+                  <li>email: {manualInput.email || '-'}</li>
+                  <li>phone: {manualInput.phone || '-'}</li>
+                </ul>
+              </div>
+              <div>
+                <h3>OCR結果</h3>
+                <p>
+                  状態:
+                  {' '}
+                  {ocrStatus === 'success'
+                    ? '成功'
+                    : ocrStatus === 'failed'
+                      ? '失敗'
+                      : ocrStatus === 'running'
+                        ? '実行中'
+                        : '未実行'}
+                </p>
+                <ul>
+                  <li>name: {ocrResult?.name ?? '-'}</li>
+                  <li>company: {ocrResult?.company ?? '-'}</li>
+                  <li>title: {ocrResult?.title ?? '-'}</li>
+                  <li>email: {ocrResult?.email ?? '-'}</li>
+                  <li>phone: {ocrResult?.phone ?? '-'}</li>
+                </ul>
+              </div>
+            </div>
+            <div className="manual-actions">
+              <button className="ghost-btn" type="button" onClick={onRetake}>
+                新しくスキャン
+              </button>
+            </div>
+          </div>
         </section>
       ) : null}
     </main>

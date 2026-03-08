@@ -166,6 +166,50 @@ button { font: inherit; cursor: pointer; border: none; background: none; }
   margin-top: 4px;
 }
 
+.report {
+  width: 100%;
+  min-height: 100vh;
+  display: grid;
+  align-content: center;
+  padding: 80px 16px 24px;
+}
+
+.report-card {
+  width: min(780px, 100%);
+  margin: 0 auto;
+  background: rgba(12, 20, 30, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 18px;
+  padding: 18px;
+  backdrop-filter: blur(8px);
+}
+
+.report-card h2 {
+  margin: 0 0 8px;
+}
+
+.report-note {
+  margin: 0 0 12px;
+  color: var(--muted);
+}
+
+.report-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.report-grid h3 {
+  margin: 0 0 6px;
+  font-size: 0.95rem;
+}
+
+.report-grid ul {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+}
+
 button:disabled { opacity: 0.6; cursor: not-allowed; }
 
 .live.no-camera #camera,
@@ -184,11 +228,18 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   .frame { inset: 18% 8%; border-width: 2px; }
   .hint { bottom: 24%; }
   .shutter { bottom: 38px; width: 68px; height: 68px; }
+  .manual-actions { grid-template-columns: 1fr; }
 }
 
 @media (orientation: landscape) and (max-height: 540px) {
   .frame { inset: 10% 24%; }
   .hint { bottom: 16%; }
+}
+
+@media (min-width: 760px) {
+  .report-grid {
+    grid-template-columns: 1fr 1fr;
+  }
 }
 
 .editor {
